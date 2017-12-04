@@ -1,0 +1,346 @@
+---
+title: "NZ Soils"
+author: "Rachel Kaminsky"
+output: html_document
+---
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(cache=TRUE, fig.width=15, fig.height=11, warning=FALSE, message=FALSE)
+```
+
+##Summary
+This document contains R code for  for chapters 4 and 5 of my PhD thesis
+
+###Load packages
+```{r}
+library(phyloseq)  
+library(ggplot2)
+library(ggthemes)
+```
+
+###Set working directory and add files
+```{r}
+setwd("/Your_FilePath")
+otu <- paste("otu_table.biom", sep = "")
+map <- paste("map.txt", sep = "")
+otu <- import_biom(otu)
+map <- import_qiime_sample_data(map)
+nzs <- merge_phyloseq(map, otu)
+nzs
+```
+
+###Remove OTUs that aren't present in at least one sample, confirm all taxa > 0
+```{r}
+nzs_rm = prune_taxa(taxa_sums(nzs) > 0, nzs)
+any(taxa_sums(nzs_rm)== 0)
+```
+
+###Rename ranks
+```{r}
+colnames(tax_table(nzs_rm)) = c("Domain", "Phylum", "Class", "Order", "Family", "Genus", "Species")
+```
+
+###Divide counts by 10 and round
+```{r}
+nzs_10  = transform_sample_counts(nzs_rm, function(x) x / 10) 
+nzsr  = transform_sample_counts(nzs_10, round )
+```
+
+###Statistics for chemical data
+```{r}
+##Make data frame from mapping file
+nzs_map = data.frame(sample_data(nzsr))
+
+##ANOVA
+fit <- aov(Sulfate ~ Time_Point + Treatment, data=nzs_map)
+
+##Post-hoc test to determine factors that drive significant changes
+TukeyHSD(fit)
+
+```
+
+###Calculate and plot observed species and shannon by pH and land use
+```{r}
+p = plot_richness(nzsr, x = "LandUse", color = "pH", measures = c("Observed", "Shannon"), sortby = "Observed") + theme_few() + theme(text = element_text(size=25), axis.text.x = element_text(angle = 90, hjust = 1)) + scale_color_gradient(low = "thistle", high = "skyblue3") + geom_point(size = 5) + geom_boxplot()
+p
+```
+
+###Calculate and plot observed species and shannon by time point, treatment and land use
+```{r}
+##Order time points
+name_order <- c("May-14", "Nov-14", "May-15")
+sample_data(nzsr)$TimePoint <- factor(sample_data(nzsr)$TimePoint, levels=name_order)
+
+##Plot diversity metrics
+p = plot_richness(nzsr, x = "LandUse", color = "Treatment", measures = c("Observed", "Shannon"), sortby = "Observed") + theme_minimal() + theme(text = element_text(size=25), axis.text.x = element_text(angle = 90, hjust = 1)) + scale_color_gradient(low = "thistle", high = "skyblue3") + geom_point(size = 5) + geom_boxplot() + facet_grid(~Time_Point)
+p
+```
+
+###Calculate and add observed species and shannon to metadata
+```{r}
+rich = estimate_richness(nzsr, measures = c("Observed", "Shannon"))
+rich = data.frame(rich, SampleID = sample_names(nzsr))
+rich_map = data.frame(nzsr_map)
+rich_meta = merge(rich, rich_map, by = "SampleID")
+
+```
+
+###Regress by pH
+```{r}
+Shannon = rich_meta$Shannon
+pH = rich_meta$pH
+plot(pH, Shannon, xlab = "pH", ylab = "Shannon", cex.lab = 1.5, cex.axis = 1.5, pch = 16)
+lmshan <- lm(Shannon ~ pH)
+abline(lmshan)
+summary(lmshan)
+
+Observed = rich_meta$Observed
+plot(pH, Observed, xlab = "pH", ylab = "Observed")
+lmobs <- lm(Observed ~ pH)
+abline(lmobs)
+summary(lmobs)
+```
+
+###Kruskal-Wallis test for correlation between observed species and shannon and land use 
+```{r}
+kruskal.test(Observed ~ LandUse, data = rich)
+kruskal.test(Shannon ~ LandUse, data = rich)
+
+##repeat for other categorical variables
+```
+
+###Create bray-curtis dm and plot ordination by pH and land use
+```{r}
+nzs_dca = ordinate(nzsr, "DCA", "bray")
+p1 = plot_ordination(nzsr, tpa_dca, color = "pH", shape = "LandUse") + theme_few() + theme(text = element_text(size=25), axis.text.x = element_text(angle = 90, hjust = 1)) + scale_color_gradient(low = "thistle", high = "skyblue3") + geom_point(size = 5)
+p1
+
+##add facet_grid(~Time_Point) to add temporal component, change color to Treatment to analyze treatment effects.
+```
+
+###Hierarchical cluster analysis
+```{r}
+https://raw.githubusercontent.com/nielshanson/mp_tutorial/master/taxonomic_analysis/code/pvclust_bcdist.R
+
+source("pvclust_bcdist.R")
+nzsr_mat <- as.matrix(otu_table(nzsr))
+library(pvclust)
+fit <- pvclust(nzsr_mat, method.hclust="ward.D",
+   method.dist="bray–curtis")
+plot(fit)
+```
+
+###Supportive statistics for pH (Mantel) and caterogical variables (Anosim)
+```{r}
+#Mantel
+nzsr_dist <- distance(nzsr, "bray")
+nzsr_sd <- data.frame(sample_data(nzsr))
+nzsr_ph <- dist(nzsr_sd$pH, method = "euclidean")
+nzsr_phd <- as.matrix(nzsr_ph)
+mantel(nzsr_dist, nzsr_phd, method = "pearson")
+
+#Anosim
+nzsr_group = get_variable(nzsr, "LandUse")
+nzsr_ano = anosim(distance(nzsr, "bray"), nzsr_group)
+nzsr_ano$signif
+nzsr_ano$statistic
+plot(nzsr_ano)
+
+#repeat Anosim for other categorical variables
+```
+
+###Calculate and plot observed species and shannon by soil order and subgroup
+```{r}
+p = plot_richness(nzsr, x = "SoilOrder", measures = c("Observed", "Shannon"), sortby = "Observed") + theme_few() + theme(text = element_text(size=23), axis.text.x = element_text(angle = 90, hjust = 1)) + geom_point(size = 5) + geom_boxplot()
+z= p+ theme(axis.title.x = element_blank(),
+             axis.title.y = element_text(size=27), strip.text.x = element_text(size=32))
+
+p = plot_richness(nzsr, x = "SoilSubgroup", measures = c("Observed", "Shannon"), sortby = "Observed") + theme_few() + theme(text = element_text(size=23), axis.text.x = element_text(angle = 90, hjust = 1)) + geom_point(size = 5) + geom_boxplot()
+z= p+ theme(axis.title.x = element_blank(),
+             axis.title.y = element_text(size=27), strip.text.x = element_text(size=32))
+```
+
+###Calculate and add observed species and shannon to metadata
+```{r}
+rich = estimate_richness(nzsr, measures = c("Observed", "Shannon"))
+rich = data.frame(rich, SampleID = sample_names(tpar))
+rich_map = data.frame(tpa_map)
+rich_meta = merge(rich, rich_map, by = "SampleID")
+```
+
+###Kruskal-Wallis test for correlation between observed species and shannon and soil order and subgroup 
+```{r}
+kruskal.test(Observed ~ SoilOrder, data = rich)
+kruskal.test(Shannon ~ SoilOrder, data = rich)
+
+kruskal.test(Observed ~ SoilSubgroup, data = rich)
+kruskal.test(Shannon ~ SoilSubgroup, data = rich)
+```
+
+###Subset data by land use
+```{r}
+hc=as.vector(sample_data(nzsr) $LandUse=="High Country")
+hcp=prune_samples(hc,nzsr)
+hcp=prune_taxa(taxa_sums(hcp)>0, hcp)
+
+sb=as.vector(sample_data(nzsr) $LandUse=="Sheep+Beef")
+sbp=prune_samples(sb,nzsr)
+sbp=prune_taxa(taxa_sums(sbp)>0, sbp)
+
+dairy=as.vector(sample_data(nzsr) $LandUse=="Dairy")
+dairyp=prune_samples(dairy, nzsr)
+dairyp=prune_taxa(taxa_sums(dairyp)>0, dairyp)
+```
+
+###Subset data by region
+```{r}
+nc=as.vector(sample_data(nzsr) $Region=="North Canterbury")
+ncp=prune_samples(nc, nzsr)
+ncp=prune_taxa(taxa_sums(ncp)>0, ncp)
+
+sc=as.vector(sample_data(nzsr) $Region=="South Canterbury")
+scp=prune_samples(sc, nzsr)
+scp=prune_taxa(taxa_sums(scp)>0, scp)
+
+otago=as.vector(sample_data(nzsr) $Region=="Otago")
+otagop=prune_samples(otago, nzsr)
+otagop=prune_taxa(taxa_sums(otagop)>0, otagop)
+
+south=as.vector(sample_data(nzsr) $Region=="Southland")
+southp=prune_samples(south, nzsr)
+southp=prune_taxa(taxa_sums(southp)>0, southp)
+```
+
+###Create ordinations for land use and region subgroups
+```{r}
+sb_dca = ordinate(sbp, "DCA", "bray")
+hc_dca = ordinate(hcp, "DCA", "bray")
+dairy_dca = ordinate(dairyp, "DCA", "bray")
+nc_dca = ordinate(ncp, "DCA", "bray")
+sc_dca = ordinate(scp, "DCA", "bray")
+south_dca = ordinate(southp, "DCA", "bray")
+otago_dca = ordinate(otagop, "DCA", "bray")
+```
+
+###Plot ordinations
+```{r}
+p1 = plot_ordination(sbp, sb_dca, color = "SoilSubgroup", shape = "SoilOrder") + theme_few() + theme(text = element_text(size=23), axis.text.x = element_text(angle = 90, hjust = 1)) + scale_color_manual(values = c("orangered", "indianred2", "mediumpurple", "violetred2")) + geom_point(size = 5) + ggtitle("Sheep+Beef")
+p2 = plot_ordination(hcp, hc_dca, color = "SoilSubgroup", shape = "SoilOrder") + theme_few() + theme(text = element_text(size=23), axis.text.x = element_text(angle = 90, hjust = 1)) + scale_color_manual(values = c("red4", "slateblue", "sienna1", "mediumorchid1", "rosybrown2")) + geom_point(size = 5) + ggtitle("High Country")
+p3 = plot_ordination(dairyp, dairy_dca, color = "SoilSubgroup", shape = "SoilOrder") + theme_few() + theme(text = element_text(size=23), axis.text.x = element_text(angle = 90, hjust = 1)) + scale_color_manual(values = c("slateblue4", "steelblue1", "seagreen3", "lightpink", "turquoise4", "mediumorchid1", "turquoise1",   "seagreen")) + geom_point(size = 5) + ggtitle("Dairy")
+p4 = plot_ordination(ncp, nc_dca, color = "SoilSubgroup", shape = "SoilOrder") + theme_few() + theme(text = element_text(size=23), axis.text.x = element_text(angle = 90, hjust = 1)) + scale_color_manual(values = c("slateblue4", "steelblue1", "sienna1", "rosybrown2", "turquoise1")) + geom_point(size = 5) + ggtitle("North Canterbury")
+p5 = plot_ordination(scp, sc_dca, color = "SoilSubgroup", shape = "SoilOrder") + theme_few() + theme(text = element_text(size=23), axis.text.x = element_text(angle = 90, hjust = 1)) + scale_color_manual(values = c("red4", "orangered", "indianred2", "lightpink", "turquoise4", "sienna1")) + geom_point(size = 5) + ggtitle("South Canterbury")
+p6 = plot_ordination(southp, south_dca, color = "SoilSubgroup", shape = "SoilOrder") + theme_few() + theme(text = element_text(size=23), axis.text.x = element_text(angle = 90, hjust = 1)) + scale_color_manual(values = c("mediumpurple", "slateblue", "seagreen3", "violetred2", "mediumorchid1", "rosybrown2")) + geom_point(size = 5) + ggtitle("Southland")
+p7 = plot_ordination(otagop, otago_dca, color = "SoilSubgroup", shape = "SoilOrder") + theme_few() + theme(text = element_text(size=23), axis.text.x = element_text(angle = 90, hjust = 1)) + scale_color_manual(values = c("mediumpurple", "slateblue", "seagreen3", "mediumorchid1", "seagreen")) + geom_point(size = 5) + ggtitle("Otago")
+
+## add facet_grid(~Time_Point) to add temporal component, change color to Treatment to analyze treatment effects.
+```
+
+###Supportive statistics for soil order and soil subgroup (Anosim)
+```{r}
+#SB
+sbp_group = get_variable(sbp, "SoilOrder")
+sbp_ano = anosim(distance(sbp, "bray"), sbp_group)
+sbp_ano$signif
+sbp_ano$statistic
+
+sbp_group = get_variable(sbp, "SoilSubgroup")
+sbp_ano = anosim(distance(sbp, "bray"), sbp_group)
+sbp_ano$signif
+sbp_ano$statistic
+plot(sbp_ano)
+
+#repeat for other land use and region subgroups, and for treatment and time point
+```
+
+
+###Find taxa that change significantly between high and low country soils
+```{r}
+library("DESeq2")
+sample_data(nzsr)$High.vs.Low <- relevel(sample_data(tpar)$High.vs.Low, "Low Country")
+diagdds = phyloseq_to_deseq2(tpar, ~High.vs.Low)
+diagdds = DESeq(diagdds,test="Wald", fitType = "local")
+res = results(diagdds, cooksCutoff = FALSE)
+res = res[order(res$padj, na.last = NA), ]
+alpha = 0.001
+sigtab = res[(res$padj < alpha), ]
+sigtab = cbind(as(sigtab, "data.frame"), as(tax_table(tpar)[rownames(sigtab), ], "matrix"))
+posigtab = sigtab[sigtab[, "log2FoldChange"] > 0, ]
+posigtab = sigtab[sigtab[, "stat"] > 6, ]
+posigtab = posigtab[, c("baseMean", "log2FoldChange", "lfcSE", "stat", "padj", "Phylum", "Class", "Family", "Genus","Species")]
+```
+
+###Plot high versus low significant taxa
+```{r}
+theme_set(theme_few())
+scale_fill_discrete <- function(palname = "Set1", ...) {
+  scale_fill_brewer(palette = palname, ...)
+}
+sigtabgen = subset(posigtab, !is.na(Genus))
+x = tapply(sigtabgen$stat, sigtabgen$Phylum, function(x) max(x))
+x = sort(x, TRUE)
+sigtabgen$Phylum = factor(as.character(sigtabgen$Phylum), levels = names(x))
+x = tapply(sigtabgen$stat, sigtabgen$Genus, function(x) max(x))
+x = sort(x, TRUE)
+sigtabgen$Genus = factor(as.character(sigtabgen$Genus), levels = names(x))
+write.csv(sigtabgen, "Sigtabgen.csv")
+sigtabgen2 = read.csv("Sigtabgen.csv", head=T)
+ggplot(sigtabgen2, aes(x = reorder(Genus,-stat,sum), y = stat, color = Phylum)) + geom_point(size = 6) + theme(text = element_text(size=25)) +
+  theme(axis.text.x = element_text(angle = -90, hjust = 0, vjust = 0.5))
+```
+
+###Make dataframe containing significant taxa with metadata for pH
+```{r}
+taxonomy = tax_table(tpar, errorIfNULL=FALSE)
+if( !is.null(taxonomy) ){
+  taxonomy = data.frame(as(taxonomy, "matrix"))
+} 
+
+otus <- otu_table(tpar)
+otus_mat <- otus@.Data
+variable <- sample_data(tpar)
+variable <- as.data.frame(variable, rownames.force = NA)
+variable <- as.data.frame(apply(variable, 2, as.numeric))
+results <- apply(otus_mat, 1 , function(x)  cor.test(variable$pH,x, method = "spearman")[c(3,4)])
+results_df <- as.data.frame(results, rownames.force = NA)
+p.vals <- unname((unlist(results)))[c(seq(from = 1, to = 230890, by = 2))]
+p.vals_df <- as.data.frame(p.vals, rownames.force = NA)
+phos <- unname((unlist(results)))[c(seq(from = 2, to = 230890, by = 2))]
+phos_df <- as.data.frame(phos, rownames.force = NA)
+fdr_adj <- p.adjust(p.vals,method = "BH")
+fdr_adj_df <- as.data.frame(fdr_adj, rownames.force = NA)
+Spearmans = cbind(as(tax_table(taxonomy), "matrix"), as(fdr_adj_df, "data.frame"))
+Spearmans = cbind(as(Spearmans, "data.frame"), as(phos_df, "data.frame"))
+Spearmans = cbind(as(Spearmans, "data.frame"), as(p.vals_df, "data.frame"))
+colnames(Spearmans) = c("Domain", "Phylum", "Class", "Order", "Family", "Genus", "Species", "pval_adj_BH", "Rho", "p.value")
+library(dplyr)
+Spearmans_sort <- arrange(Spearmans, pval_adj_BH)
+Spearman_mostsig <- subset(Spearmans, Rho >= 0.6 & pval_adj_BH < 0.001 | Rho <= -0.6 & pval_adj_BH < 0.001)
+```
+
+###Plot significant taxa for pH
+```{r}
+pHsigtabgen = subset(Spearman_mostsig, !is.na(Genus))
+x = tapply(pHsigtabgen$Rho, pHsigtabgen$Phylum, function(x) max(x))
+x = sort(x, TRUE)
+pHsigtabgen$Phylum = factor(as.character(pHsigtabgen$Phylum), levels = names(x))
+x = tapply(pHsigtabgen$Rho, pHsigtabgen$Genus, function(x) max(x))
+x = sort(x, TRUE)
+pHsigtabgen$Genus = factor(as.character(pHsigtabgen$Genus), levels = names(x))
+write.csv(pHsigtabgen, "pHSigtabgen.csv")
+pHsigtabgen2 = read.csv("pHSigtabgen.csv", head=T)
+ggplot(pHsigtabgen2, aes(x = reorder(Genus,-Rho,sum), y = Rho, color = Phylum)) + geom_point(size = 6) + theme(text = element_text(size=25)) + 
+  theme(axis.text.x = element_text(angle = -90, hjust = 0, vjust = 0.5))
+```
+
+###Can also use ALDEx2 for finding significant taxa for all variables
+```{r}
+nzsr_dat <- data.frame(otu_table(nzsr))
+nzsr_sam <- data.frame(sample_data(nzsr))
+
+library(ALDEx2)
+nzsr.aldex.clr <- aldex.clr(nzsr, mc.samples = 128)
+nzsr.lu.aldex.glm <- aldex.glm(nzsr.aldex.clr, nzsr_sam$LandUse)
+nzsr.tp.aldex.glm <- aldex.glm(nzsr.aldex.clr, nzsr_sam$Time_Point)
+nzsr.tx.aldex.glm <- aldex.glm(nzsr.aldex.clr, nzsr_sam$Treatment)
+nzsr.so.aldex.glm <- aldex.glm(nzsr.aldex.clr, nzsr_sam$SoilOrder)
+nzsr.pH.aldex.corr <- aldex.corr(nzsr.aldex.clr, nzsr_sam$pH)
+```
